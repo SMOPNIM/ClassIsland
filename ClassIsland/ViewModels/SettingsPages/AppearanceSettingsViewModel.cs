@@ -9,7 +9,7 @@ namespace ClassIsland.ViewModels.SettingsPages;
 
 public partial class AppearanceSettingsViewModel(SettingsService settingsService) : ObservableRecipient
 {
-    [ObservableProperty] private string _fontSizeTestText = "风带来故事的种子，时间使之发芽。The quick brown fox jumps over a lazy dog.";
+    [ObservableProperty] private string _fontSizeTestText = "滚滚长江东逝水，浪花淘尽英雄。The quick brown fox jumps over a lazy dog.";
     
     public ObservableCollection<FontFamily> FontFamilies { get; } =
         new([..FontManager.Current.SystemFonts, MainWindow.DefaultFontFamily]);

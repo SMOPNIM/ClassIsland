@@ -68,6 +68,8 @@ public partial class AboutSettingsPage : SettingsPageBase
         IAppHost.TryGetService<IUriNavigationService>()?.NavigateWrapped(new Uri(url));
     }
 
+    /*
+    //class_form项目地址
     private void Hyperlink2_OnClick(object sender, RoutedEventArgs e)
     {
         Process.Start(new ProcessStartInfo()
@@ -76,6 +78,7 @@ public partial class AboutSettingsPage : SettingsPageBase
             UseShellExecute = true
         });
     }
+    */
 
     private async void ButtonDiagnosticInfo_OnClick(object sender, RoutedEventArgs e)
     {
@@ -163,6 +166,8 @@ public partial class AboutSettingsPage : SettingsPageBase
         }.ShowDialog((TopLevel.GetTopLevel(this) as Window)!);
     }
 
+    /*
+    //随机抽取一条回声洞。
     private async void Sayings_OnMouseLeftButtonDown(object sender, RoutedEventArgs e)
     {
         if (ViewModel.IsSayingBusy)
@@ -193,6 +198,7 @@ public partial class AboutSettingsPage : SettingsPageBase
         }
         SentrySdk.Metrics.EmitCounter("views.settings.about.sayings.click", 1);
     }
+    */
 
     private async void SettingsExpanderItemShowOssLicense_OnClick(object? sender, RoutedEventArgs e)
     {
