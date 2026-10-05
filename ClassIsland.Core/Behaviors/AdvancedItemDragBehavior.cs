@@ -4,6 +4,7 @@
 // Modified by HelloWRC, 2025
 
 using System.Collections;
+using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -86,32 +87,90 @@ public class AdvancedItemDragBehavior : StyledElementBehavior<Control>
         set => SetValue(AllowDragFromDragThumbOnlyProperty, value);
     }
 
+    private bool _stoodDown;
+
     /// <inheritdoc />
-    protected override void OnAttachedToVisualTree()
+    protected override void OnAttached()
     {
+        base.OnAttached();
         if (AssociatedObject is not null)
         {
-            AssociatedObject.AddHandler(InputElement.PointerReleasedEvent, PointerReleased, RoutingStrategies.Tunnel);
-            AssociatedObject.AddHandler(InputElement.PointerPressedEvent, PointerPressed, RoutingStrategies.Tunnel);
-            AssociatedObject.AddHandler(InputElement.PointerMovedEvent, PointerMoved, RoutingStrategies.Tunnel);
-            AssociatedObject.AddHandler(InputElement.PointerCaptureLostEvent, PointerCaptureLost, RoutingStrategies.Tunnel);
+            // 必须在元素级订阅：Style 重应用 Behaviors 时只走 OnDetaching，
+            // 不走 OnDetachedFromVisualTree。订阅若绑在 visual-tree 生命周期上，
+            // 旧实例的隧道订阅会残留（AssociatedObject 已置空）而新实例接不上，
+            // 按压全打进僵尸实例导致“拖一次就死”。先移除再添加，保证幂等。
+            RemoveElementHandlers(AssociatedObject);
+            AddElementHandlers(AssociatedObject);
+            // 去重：同元素已有活实例时后来者 stand down，保证每元素恰好一个活实例，
+            // 否则两个实例会在 Release 时各执行一次 MoveDraggedItem 把顺序弹回去。
+            if (CountActiveSiblings() > 0)
+            {
+                _stoodDown = true;
+                RemoveElementHandlers(AssociatedObject);
+            }
         }
     }
 
     /// <inheritdoc />
-    protected override void OnDetachedFromVisualTree()
+    protected override void OnDetaching()
     {
-        if (AssociatedObject is not null)
+        var associated = AssociatedObject;
+        if (associated is not null)
         {
-            AssociatedObject.RemoveHandler(InputElement.PointerReleasedEvent, PointerReleased);
-            AssociatedObject.RemoveHandler(InputElement.PointerPressedEvent, PointerPressed);
-            AssociatedObject.RemoveHandler(InputElement.PointerMovedEvent, PointerMoved);
-            AssociatedObject.RemoveHandler(InputElement.PointerCaptureLostEvent, PointerCaptureLost);
+            RemoveElementHandlers(associated);
+            if (!_stoodDown)
+            {
+                // 自己是活实例：尝试激活第一个 stand down 的同类，把位置传下去。
+                foreach (var sibling in Avalonia.Xaml.Interactivity.Interaction.GetBehaviors(associated)?.OfType<AdvancedItemDragBehavior>() ?? Enumerable.Empty<AdvancedItemDragBehavior>())
+                {
+                    if (!ReferenceEquals(sibling, this) && sibling._stoodDown)
+                    {
+                        sibling._stoodDown = false;
+                        sibling.AddElementHandlers(associated);
+                        break;
+                    }
+                }
+            }
         }
+        base.OnDetaching();
+    }
+
+    private int CountActiveSiblings()
+    {
+        var associated = AssociatedObject;
+        if (associated is null) return 0;
+        var count = 0;
+        foreach (var sibling in Avalonia.Xaml.Interactivity.Interaction.GetBehaviors(associated)?.OfType<AdvancedItemDragBehavior>() ?? Enumerable.Empty<AdvancedItemDragBehavior>())
+        {
+            if (!ReferenceEquals(sibling, this) && !sibling._stoodDown) count++;
+        }
+        return count;
+    }
+
+    private void AddElementHandlers(Control associated)
+    {
+        associated.AddHandler(InputElement.PointerReleasedEvent, PointerReleased, RoutingStrategies.Tunnel);
+        associated.AddHandler(InputElement.PointerPressedEvent, PointerPressed, RoutingStrategies.Tunnel);
+        associated.AddHandler(InputElement.PointerMovedEvent, PointerMoved, RoutingStrategies.Tunnel);
+        associated.AddHandler(InputElement.PointerCaptureLostEvent, PointerCaptureLost, RoutingStrategies.Tunnel);
+    }
+
+    private void RemoveElementHandlers(Control associated)
+    {
+        associated.RemoveHandler(InputElement.PointerReleasedEvent, PointerReleased);
+        associated.RemoveHandler(InputElement.PointerPressedEvent, PointerPressed);
+        associated.RemoveHandler(InputElement.PointerMovedEvent, PointerMoved);
+        associated.RemoveHandler(InputElement.PointerCaptureLostEvent, PointerCaptureLost);
+    }
+
+    private bool IsStaleHandler(object? sender)
+    {
+        return !ReferenceEquals(AssociatedObject, sender);
     }
 
     private void PointerPressed(object? sender, PointerPressedEventArgs e)
     {
+        if (IsStaleHandler(sender)) return;
         var isFromDragThumb = (e.Source as Control)?.FindAncestorOfType<TouchDragThumb>() is not null;
         var isFromCurrentThumb = e.Source is Control c1 && UITreeHelper.HasParent(c1, AssociatedObject);
         if ((e.Source as Control)?.FindAncestorOfType<ISelectable>() is {} selectable && !Equals(selectable, AssociatedObject))
@@ -149,6 +208,7 @@ public class AdvancedItemDragBehavior : StyledElementBehavior<Control>
 
     private void PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        if (IsStaleHandler(sender)) return;
         if (_captured)
         {
             if (e.InitialPressMouseButton == MouseButton.Left)
@@ -162,6 +222,7 @@ public class AdvancedItemDragBehavior : StyledElementBehavior<Control>
 
     private void PointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
     {
+        if (IsStaleHandler(sender)) return;
         Released();
         _captured = false;
     }
@@ -172,6 +233,42 @@ public class AdvancedItemDragBehavior : StyledElementBehavior<Control>
         {
             return;
         }
+
+        var snapshotControl = _itemsControl;
+        // 排序后下一帧检查各行 behavior：ItemsControl 排序时会清空行容器的
+        // Interaction.Behaviors 且不再补回，行为数为 0 的行在此自愈补上。
+        // OnAttached 去重保证不会叠加；自愈尽力而为，不应影响主流程。
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                if (snapshotControl is null)
+                {
+                    return;
+                }
+                foreach (var c in snapshotControl.GetRealizedContainers())
+                {
+                    var behaviors = Avalonia.Xaml.Interactivity.Interaction.GetBehaviors(c);
+                    var ours = behaviors?.OfType<AdvancedItemDragBehavior>().Count() ?? -1;
+                    if (ours == 0 && behaviors is not null)
+                    {
+                        // 按本实例（刚完成拖拽、配置与该行一致）补一个；OnAttached 去重保证不叠加。
+                        var healed = new AdvancedItemDragBehavior
+                        {
+                            Orientation = Orientation,
+                            HorizontalDragThreshold = HorizontalDragThreshold,
+                            VerticalDragThreshold = VerticalDragThreshold,
+                            AllowDragFromDragThumbOnly = AllowDragFromDragThumbOnly
+                        };
+                        behaviors.Add(healed);
+                    }
+                }
+            }
+            catch
+            {
+                // 自愈失败则保持现状，不影响主流程。
+            }
+        });
 
         RemoveTransforms(_itemsControl);
 
@@ -286,6 +383,7 @@ public class AdvancedItemDragBehavior : StyledElementBehavior<Control>
 
     private void PointerMoved(object? sender, PointerEventArgs e)
     {
+        if (IsStaleHandler(sender)) return;
         var properties = e.GetCurrentPoint(AssociatedObject).Properties;
         if (_captured
             && properties.IsLeftButtonPressed)
